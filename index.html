@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Air Writer - Ultra Pro</title>
+
+<style>
+body{margin:0;background:#000;overflow:hidden;font-family:sans-serif;}
+
+video{
+transform:scaleX(-1);
+position:absolute;
+width:100vw;
+height:100vh;
+object-fit:cover;
+opacity:0.6;
+}
+
+canvas{
+position:absolute;
+top:0;
+left:0;
+width:100vw;
+height:100vh;
+}
+
+.controls{
+position:absolute;
+top:20px;
+left:20px;
+color:#ffd700;
+z-index:10;
+background:rgba(0,0,0,0.5);
+padding:10px;
+border-radius:8px;
+font-size:14px;
+}
+
+/* color picker */
+
+.color-picker{
+position:absolute;
+top:20px;
+left:50%;
+transform:translateX(-50%);
+display:flex;
+gap:12px;
+z-index:20;
+}
+
+.color{
+width:22px;
+height:22px;
+border-radius:50%;
+cursor:pointer;
+border:2px solid white;
+box-shadow:0 0 10px currentColor,0 0 20px currentColor;
+}
+</style>
+</head>
+
+<body>
+
+<div class="controls">
+☝️ Draw | 🤟 Eraser | ✊ Clear All
+</div>
+
+<div class="color-picker">
+
+<div class="color" data-color="#FFD700" style="background:#FFD700"></div>
+<div class="color" data-color="#8D0000" style="background:#8D0000"></div>
+<div class="color" data-color="#000080" style="background:#000080"></div>
+<div class="color" data-color="#FFFFFF" style="background:#FFFFFF"></div>
+<div class="color" data-color="#000000" style="background:#000000"></div>
+
+</div>
+
+<video id="webcam" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script>
+
+const video=document.getElementById("webcam");
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+
+let paths=[];
+let currentPath=[];
+let smoothPoint=null;
+let neonColor="#FFD700";
+
+/* color picker */
+
+document.querySelectorAll(".color").forEach(c=>{
+c.onclick=()=>{
+neonColor=c.dataset.color;
+};
+});
+
+/* smoothing */
+
+function smooth(x,y){
+if(!smoothPoint){
+smoothPoint={x,y};
+}
+smoothPoint.x+=(x-smoothPoint.x)*0.35;
+smoothPoint.y+=(y-smoothPoint.y)*0.35;
+return smoothPoint;
+}
+
+/* gestures */
+
+function fingerUp(lm,tip,base){
+return lm[tip].y < lm[base].y;
+}
+
+function isFist(lm){
+return !fingerUp(lm,8,6) &&
+!fingerUp(lm,12,10) &&
+!fingerUp(lm,16,14) &&
+!fingerUp(lm,20,18);
+}
+
+function isDraw(lm){
+return fingerUp(lm,8,6) &&
+!fingerUp(lm,12,10);
+}
+
+function isEraser(lm){
+return fingerUp(lm,20,18);
+}
+
+/* main */
+
+async function start(){
+
+const hands=new Hands({
+locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+maxNumHands:1,
+modelComplexity:1,
+minDetectionConfidence:0.8,
+minTrackingConfidence:0.8
+});
+
+hands.onResults((results)=>{
+
+ctx.clearRect(0,0,canvas.width,canvas.height);
+
+if(results.multiHandLandmarks && results.multiHandLandmarks.length>0){
+
+const lm=results.multiHandLandmarks[0];
+const tip=lm[8];
+
+let x=canvas.width-(tip.x*canvas.width);
+let y=tip.y*canvas.height;
+
+let s=smooth(x,y);
+
+if(isFist(lm)){
+paths=[];
+currentPath=[];
+}
+
+else if(isEraser(lm)){
+eraseAt(s.x,s.y);
+}
+
+else if(isDraw(lm)){
+currentPath.push({x:s.x,y:s.y});
+}
+
+else{
+if(currentPath.length>0){
+paths.push([...currentPath]);
+currentPath=[];
+}
+}
+
+/* skeleton */
+
+ctx.save();
+ctx.translate(canvas.width,0);
+ctx.scale(-1,1);
+
+drawConnectors(ctx,lm,HAND_CONNECTIONS,{
+color:'rgba(255,255,255,0.3)',
+lineWidth:0.5
+});
+
+drawLandmarks(ctx,lm,{
+color:'#FFFFFF',
+radius:1
+});
+
+ctx.restore();
+}
+
+render([...paths,currentPath]);
+});
+
+const camera=new Camera(video,{
+onFrame:async()=>{await hands.send({image:video});},
+width:1280,
+height:720
+});
+
+camera.start();
+
+video.onloadedmetadata=()=>{
+canvas.width=video.videoWidth;
+canvas.height=video.videoHeight;
+};
+}
+
+/* eraser */
+
+function eraseAt(x,y){
+const radius=25;
+
+paths=paths.map(path=>{
+return path.filter(p=>{
+let dx=p.x-x;
+let dy=p.y-y;
+return Math.sqrt(dx*dx+dy*dy)>radius;
+});
+});
+}
+
+/* render */
+
+function render(all){
+
+all.forEach(path=>{
+if(path.length<2)return;
+
+ctx.lineJoin="round";
+ctx.lineCap="round";
+
+ctx.shadowBlur=18;
+ctx.shadowColor=neonColor;
+ctx.strokeStyle=neonColor;
+ctx.lineWidth=2;
+draw(path);
+
+ctx.shadowBlur=6;
+ctx.lineWidth=2;
+draw(path);
+
+ctx.shadowBlur=0;
+ctx.lineWidth=2;
+draw(path);
+});
+}
+
+function draw(path){
+ctx.beginPath();
+ctx.moveTo(path[0].x,path[0].y);
+for(let i=1;i<path.length;i++){
+ctx.lineTo(path[i].x,path[i].y);
+}
+ctx.stroke();
+}
+
+start();
+
+</script>
+</body>
+</html>
